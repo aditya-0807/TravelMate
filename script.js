@@ -360,10 +360,20 @@ let loggedExpenses = [
   { id: 7, title: 'Handcrafted Incense & Washi Paper', category: 'Souvenirs & Gifts', amount: 50, date: 'Oct 17' }
 ];
 
-// --- Initialization ---
-document.addEventListener('DOMContentLoaded', () => {
+// --- Initialization with Persistent Database ---
+document.addEventListener('DOMContentLoaded', async () => {
   setupNavigation();
   setupMobileMenu();
+
+  if (window.TravelMateDB) {
+    try {
+      await TravelMateDB.init();
+      await syncWithDatabase();
+    } catch (err) {
+      console.warn('Database initialization fallback:', err);
+    }
+  }
+
   renderItineraryHeader();
   renderDayTabs();
   renderDaySchedule(1);
@@ -371,6 +381,87 @@ document.addEventListener('DOMContentLoaded', () => {
   renderBudgetBreakdown();
   renderExpenseLog();
 });
+
+// Seed or load from IndexedDB
+async function syncWithDatabase() {
+  const existingTrips = await TravelMateDB.getAllTrips();
+
+  if (existingTrips.length === 0) {
+    // Seed default trips into DB
+    for (const key of Object.keys(defaultTrips)) {
+      const t = defaultTrips[key];
+      await TravelMateDB.saveTrip({
+        id: t.id,
+        destination: t.destination,
+        dates: t.dates,
+        budget: t.totalBudget,
+        currency: t.currency,
+        travellers: t.travellers,
+        travel_style: t.style,
+        accommodation: t.hotel,
+        pace: 'Balanced & Steady',
+        title: t.title,
+        city: t.city
+      });
+      await TravelMateDB.saveItineraryDays(t.id, t.days);
+    }
+
+    // Seed default packing items
+    for (const item of packingItems) {
+      await TravelMateDB.savePackingItem({ ...item, tripId: activeTrip.id });
+    }
+
+    // Seed default expenses
+    for (const exp of loggedExpenses) {
+      await TravelMateDB.saveExpense({ ...exp, tripId: activeTrip.id });
+    }
+  } else {
+    // Load from DB
+    const savedTrips = await TravelMateDB.getAllTrips();
+    // Load active trip itinerary
+    const savedDays = await TravelMateDB.getItinerary(activeTrip.id);
+    if (savedDays && savedDays.length > 0) {
+      activeTrip.days = savedDays.map((d, idx) => ({
+        dayNum: d.day || (idx + 1),
+        subtitle: d.subtitle || `Day ${idx + 1}`,
+        theme: d.theme || 'Exploration & Sights',
+        hotel: d.hotel || activeTrip.hotel,
+        city: d.city || activeTrip.city,
+        morning: d.morning,
+        afternoon: d.afternoon,
+        evening: d.evening
+      }));
+    }
+
+    // Load packing items for active trip
+    const dbPacking = await TravelMateDB.getPacking(activeTrip.id);
+    if (dbPacking && dbPacking.length > 0) {
+      packingItems = dbPacking;
+    }
+
+    // Load expenses for active trip
+    const dbExpenses = await TravelMateDB.getExpenses(activeTrip.id);
+    if (dbExpenses && dbExpenses.length > 0) {
+      loggedExpenses = dbExpenses;
+    }
+
+    // Populate extra saved custom trips into grid
+    savedTrips.forEach(trip => {
+      if (!defaultTrips[trip.id]) {
+        addNewTripToScrapbook({
+          id: trip.id,
+          title: trip.title || `${trip.destination} Scrapbook`,
+          destination: trip.destination,
+          dates: trip.dates,
+          travellers: trip.travellers,
+          style: trip.travel_style || 'Cultural',
+          totalBudget: trip.budget || 2000,
+          currency: trip.currency || 'USD'
+        });
+      }
+    });
+  }
+}
 
 // ==========================================================
 // 1. PAGE NAVIGATION
@@ -657,6 +748,24 @@ function handleTripPlanSubmit(e) {
   currentCurrency = currency;
   currentDayIndex = 1;
 
+  // Persist trip & itinerary into database
+  if (window.TravelMateDB) {
+    TravelMateDB.saveTrip({
+      id: activeTrip.id,
+      destination: activeTrip.destination,
+      dates: activeTrip.dates,
+      budget: activeTrip.totalBudget,
+      currency: activeTrip.currency,
+      travellers: activeTrip.travellers,
+      travel_style: activeTrip.style,
+      accommodation: activeTrip.hotel,
+      pace: pace,
+      title: activeTrip.title,
+      city: activeTrip.city
+    });
+    TravelMateDB.saveItineraryDays(activeTrip.id, generatedDays);
+  }
+
   // Add to My Trips grid as a new scrapbook card
   addNewTripToScrapbook(activeTrip);
 
@@ -746,12 +855,18 @@ function togglePackingItem(itemId) {
   const item = packingItems.find(i => i.id === itemId);
   if (item) {
     item.checked = !item.checked;
+    if (window.TravelMateDB) {
+      TravelMateDB.savePackingItem({ ...item, tripId: activeTrip.id });
+    }
     renderPackingList();
   }
 }
 
 function deletePackingItem(itemId) {
   packingItems = packingItems.filter(i => i.id !== itemId);
+  if (window.TravelMateDB) {
+    TravelMateDB.deletePackingItem(itemId);
+  }
   renderPackingList();
   showToast('Item removed from luggage checklist');
 }
@@ -770,6 +885,9 @@ function addCustomPackingItem() {
   };
 
   packingItems.push(newItem);
+  if (window.TravelMateDB) {
+    TravelMateDB.savePackingItem({ ...newItem, tripId: activeTrip.id });
+  }
   textInput.value = '';
   renderPackingList();
   showToast(`Added "${text}" to your bag! 🧳`);
@@ -887,13 +1005,19 @@ function handleNewExpense(e) {
   const today = new Date();
   const dateStr = today.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
-  loggedExpenses.push({
+  const newExp = {
     id: Date.now(),
+    tripId: activeTrip.id,
     title: title,
     category: category,
     amount: amount,
     date: dateStr
-  });
+  };
+
+  loggedExpenses.push(newExp);
+  if (window.TravelMateDB) {
+    TravelMateDB.saveExpense(newExp);
+  }
 
   nameInput.value = '';
   amtInput.value = '';
