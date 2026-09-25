@@ -3,9 +3,54 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 
+// Load environment variables from .env
+function loadEnv() {
+  const envCandidates = [
+    path.join(__dirname, '.env'),
+    path.join(__dirname, '..', '.env'),
+    path.join(process.cwd(), '.env')
+  ];
+  for (const envPath of envCandidates) {
+    if (fs.existsSync(envPath)) {
+      try {
+        if (typeof process.loadEnvFile === 'function') {
+          process.loadEnvFile(envPath);
+        } else {
+          const content = fs.readFileSync(envPath, 'utf8');
+          for (const line of content.split(/\r?\n/)) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith('#')) continue;
+            const eqIdx = trimmed.indexOf('=');
+            if (eqIdx > 0) {
+              const k = trimmed.slice(0, eqIdx).trim();
+              let v = trimmed.slice(eqIdx + 1).trim();
+              if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
+                v = v.slice(1, -1);
+              }
+              if (!process.env[k]) {
+                process.env[k] = v;
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('Note: Could not load .env file:', err.message);
+      }
+    }
+  }
+}
+loadEnv();
+
 const PORT = 3000;
-const DB_PATH = path.join(__dirname, 'travelmate.db');
-const STATIC_DIR = path.join(__dirname, 'TravelMate');
+const DB_PATH = fs.existsSync(path.join(__dirname, 'travelmate.db'))
+  ? path.join(__dirname, 'travelmate.db')
+  : (fs.existsSync(path.join(__dirname, '..', 'travelmate.db'))
+      ? path.join(__dirname, '..', 'travelmate.db')
+      : path.join(__dirname, 'travelmate.db'));
+
+const STATIC_DIR = fs.existsSync(path.join(__dirname, 'index.html'))
+  ? __dirname
+  : path.join(__dirname, 'TravelMate');
 
 // Initialize SQLite database
 const db = new DatabaseSync(DB_PATH);
@@ -175,6 +220,301 @@ function sendJSON(res, statusCode, payload) {
   res.end(JSON.stringify(payload));
 }
 
+// --- GROQ AI INTEGRATION (openai/gpt-oss-120b) ---
+async function generateTripWithGroq(body) {
+  const apiKey = process.env.XAI_API_KEY || process.env.GROQ_API_KEY;
+  if (!apiKey || apiKey === '$$$$$') {
+    throw new Error('Groq API key not configured. Please set your valid key in .env (replace XAI_API_KEY=$$$$$ with your key).');
+  }
+
+  const destination = (body.destination || '').trim();
+  if (!destination) {
+    throw new Error('Destination is required.');
+  }
+
+  const depDate = body.depDate || '2026-10-15';
+  const retDate = body.retDate || '2026-10-20';
+  const budget = parseFloat(body.budget) || 2000;
+  const currency = body.currency || 'USD';
+  const travellers = parseInt(body.travellers) || 2;
+  const travellerType = body.travellerType || 'couple';
+  const style = body.style || body.travel_style || 'Cultural & Historic';
+  const accommodation = body.accommodation || body.hotel || 'Boutique Hotel';
+  const pace = body.pace || 'Balanced & Steady';
+  const notes = body.notes || '';
+
+  const start = new Date(depDate);
+  const end = new Date(retDate);
+  let diffDays = Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1;
+  if (isNaN(diffDays) || diffDays < 1) diffDays = 3;
+  if (diffDays > 14) diffDays = 14;
+
+  const prompt = `You are TravelMate AI, an expert travel designer. Create a comprehensive, realistic, and aesthetic travel scrapbook itinerary for the following preferences:
+
+Destination: ${destination}
+Dates: ${depDate} to ${retDate} (${diffDays} Days)
+Budget: ${budget} ${currency}
+Travellers: ${travellers} (${travellerType})
+Style: ${style}
+Accommodation: ${accommodation}
+Pace: ${pace}
+Special Notes / Wishes: ${notes || 'None'}
+
+Weather & Packing Instructions:
+- Infer the realistic local season and climate in ${destination} for the travel dates (${depDate} to ${retDate}).
+- Generate packing suggestions specifically tailored to this weather (e.g. rain gear, light cottons, thermal layers, walking shoes, sun care).
+
+Return ONLY a valid JSON object matching this schema:
+{
+  "summary": {
+    "title": "Aesthetic scrapbook title",
+    "destination": "${destination}",
+    "city": "Primary city name",
+    "dates": "${depDate} to ${retDate} (${diffDays} Days)",
+    "currency": "${currency}",
+    "budget": ${budget},
+    "travellers": "${travellers} Traveller(s)",
+    "travel_style": "${style}",
+    "accommodation": "Specific recommended hotel or inn name",
+    "pace": "${pace}",
+    "weather_overview": "Seasonal climate summary for these dates"
+  },
+  "days": [
+    {
+      "dayNum": 1,
+      "subtitle": "Short subtitle (e.g. Arrival & Lanterns)",
+      "theme": "Theme description of the day",
+      "city": "City or neighborhood for this day",
+      "hotel": "Hotel name for this day",
+      "morning": {
+        "time": "08:30 AM - 11:30 AM",
+        "title": "Morning activity title",
+        "desc": "Morning activity description",
+        "chips": ["emoji chip 1", "emoji chip 2", "emoji chip 3"]
+      },
+      "afternoon": {
+        "time": "01:00 PM - 04:30 PM",
+        "title": "Afternoon activity title",
+        "desc": "Afternoon activity description",
+        "chips": ["emoji chip 1", "emoji chip 2", "emoji chip 3"]
+      },
+      "evening": {
+        "time": "06:30 PM - 09:30 PM",
+        "title": "Evening activity title",
+        "desc": "Evening activity description",
+        "chips": ["emoji chip 1", "emoji chip 2", "emoji chip 3"]
+      }
+    }
+  ],
+  "packing": [
+    {
+      "item_text": "Item name and brief weather/utility context",
+      "category": "clothes"
+    }
+  ],
+  "budget": [
+    {
+      "title": "Planned expense line item",
+      "category": "Hotel & Stay",
+      "amount": 500,
+      "date_logged": "Day 1"
+    }
+  ]
+}
+
+Important Constraints:
+1. Provide exactly ${diffDays} days in "days", numbered 1 to ${diffDays}.
+2. "packing" must contain 8-12 items. Category MUST strictly be one of: "clothes", "toiletries", "tech", "documents". Include weather-appropriate items.
+3. "budget" must contain 5-8 realistic line items summing close to ${budget} ${currency}. Category MUST strictly be one of: "Hotel & Stay", "Food & Dining", "Activities & Entry", "Transport & Metro", "Souvenirs & Gifts".`;
+
+  let lastError;
+  const maxRetries = 2;
+
+  for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
+    try {
+      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model: 'openai/gpt-oss-120b',
+          messages: [
+            {
+              role: 'system',
+              content: 'You are TravelMate AI. Output strictly valid JSON without markdown fences, explanation, or extra keys.'
+            },
+            {
+              role: 'user',
+              content: prompt
+            }
+          ],
+          response_format: { type: 'json_object' },
+          temperature: 0.7
+        })
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        let errMsg = `Groq API responded with status ${response.status}`;
+        try {
+          const errJson = JSON.parse(errorText);
+          if (errJson.error?.message) {
+            errMsg = errJson.error.message;
+          }
+        } catch {}
+
+        if ((response.status === 429 || response.status >= 500) && attempt <= maxRetries) {
+          await new Promise(r => setTimeout(r, 1500 * attempt));
+          continue;
+        }
+        throw new Error(errMsg);
+      }
+
+      const resData = await response.json();
+      let rawContent = resData.choices?.[0]?.message?.content;
+      if (!rawContent) {
+        throw new Error('Groq returned empty response content.');
+      }
+
+      rawContent = rawContent.trim();
+      if (rawContent.startsWith('```json')) {
+        rawContent = rawContent.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+      } else if (rawContent.startsWith('```')) {
+        rawContent = rawContent.replace(/^```\s*/, '').replace(/\s*```$/, '');
+      }
+
+      const aiData = JSON.parse(rawContent);
+
+      if (!aiData.days || !Array.isArray(aiData.days) || aiData.days.length === 0) {
+        throw new Error('AI generated invalid itinerary days structure.');
+      }
+
+      const tripId = 'trip_' + Date.now();
+      const tripTitle = aiData.summary?.title || `${destination} Scrapbook`;
+      const tripDates = aiData.summary?.dates || `${depDate} to ${retDate} (${diffDays} Days)`;
+      const tripCity = aiData.summary?.city || destination;
+      const tripHotel = aiData.summary?.accommodation || accommodation;
+      const tripTravellers = aiData.summary?.travellers || `${travellers} Traveller(s)`;
+      const tripPace = aiData.summary?.pace || pace;
+      const tripStyle = aiData.summary?.travel_style || style;
+      const tripNotes = notes || aiData.summary?.weather_overview || '';
+
+      // 1. Save trip to database
+      db.prepare(`
+        INSERT INTO trips (id, title, destination, dates, budget, currency, travellers, travel_style, accommodation, pace, notes, city)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        tripId,
+        tripTitle,
+        destination,
+        tripDates,
+        budget,
+        currency,
+        tripTravellers,
+        tripStyle,
+        tripHotel,
+        tripPace,
+        tripNotes,
+        tripCity
+      );
+
+      // 2. Save itinerary days
+      const insItin = db.prepare(`
+        INSERT INTO itinerary (trip_id, day_number, subtitle, theme, city, hotel, morning, afternoon, evening)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      for (let i = 0; i < aiData.days.length; i++) {
+        const d = aiData.days[i];
+        insItin.run(
+          tripId,
+          d.dayNum || (i + 1),
+          d.subtitle || `Day ${i + 1}`,
+          d.theme || 'Scrapbook Adventures',
+          d.city || tripCity,
+          d.hotel || tripHotel,
+          typeof d.morning === 'object' ? JSON.stringify(d.morning) : (d.morning || ''),
+          typeof d.afternoon === 'object' ? JSON.stringify(d.afternoon) : (d.afternoon || ''),
+          typeof d.evening === 'object' ? JSON.stringify(d.evening) : (d.evening || '')
+        );
+      }
+
+      // 3. Save packing items
+      const packingItems = Array.isArray(aiData.packing) ? aiData.packing : [];
+      const insPack = db.prepare(`
+        INSERT INTO packing (id, trip_id, item_text, category, is_checked)
+        VALUES (?, ?, ?, ?, ?)
+      `);
+      const packBaseId = Date.now();
+      for (let i = 0; i < packingItems.length; i++) {
+        const p = packingItems[i];
+        const validCats = ['clothes', 'toiletries', 'tech', 'documents'];
+        const cat = validCats.includes(p.category) ? p.category : 'clothes';
+        insPack.run(packBaseId + i, tripId, p.item_text || 'Travel item', cat, 0);
+      }
+
+      // 4. Save budget items
+      const budgetItems = Array.isArray(aiData.budget) ? aiData.budget : [];
+      const insBudget = db.prepare(`
+        INSERT INTO budget (id, trip_id, title, category, amount, date_logged)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `);
+      const budgetBaseId = Date.now() + 1000;
+      for (let i = 0; i < budgetItems.length; i++) {
+        const b = budgetItems[i];
+        const validBudgetCats = ['Hotel & Stay', 'Food & Dining', 'Activities & Entry', 'Transport & Metro', 'Souvenirs & Gifts'];
+        let bCat = b.category || 'Activities & Entry';
+        if (!validBudgetCats.includes(bCat)) {
+          if (bCat.toLowerCase().includes('hotel') || bCat.toLowerCase().includes('stay')) bCat = 'Hotel & Stay';
+          else if (bCat.toLowerCase().includes('food') || bCat.toLowerCase().includes('dine') || bCat.toLowerCase().includes('dining')) bCat = 'Food & Dining';
+          else if (bCat.toLowerCase().includes('transport') || bCat.toLowerCase().includes('transit')) bCat = 'Transport & Metro';
+          else if (bCat.toLowerCase().includes('souvenir') || bCat.toLowerCase().includes('gift')) bCat = 'Souvenirs & Gifts';
+          else bCat = 'Activities & Entry';
+        }
+        insBudget.run(
+          budgetBaseId + i,
+          tripId,
+          b.title || 'Planned Expense',
+          bCat,
+          parseFloat(b.amount) || 50,
+          b.date_logged || `Day ${Math.min(i + 1, diffDays)}`
+        );
+      }
+
+      return {
+        success: true,
+        tripId,
+        trip: {
+          id: tripId,
+          title: tripTitle,
+          destination,
+          dates: tripDates,
+          budget,
+          currency,
+          travellers: tripTravellers,
+          travel_style: tripStyle,
+          accommodation: tripHotel,
+          pace: tripPace,
+          city: tripCity,
+          weather_overview: aiData.summary?.weather_overview || ''
+        },
+        days: aiData.days,
+        packing: packingItems,
+        budget: budgetItems
+      };
+    } catch (err) {
+      lastError = err;
+      if (attempt <= maxRetries && !err.message.includes('not configured')) {
+        await new Promise(r => setTimeout(r, 1500 * attempt));
+      }
+    }
+  }
+
+  throw lastError;
+}
+
 // Server router
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
@@ -192,6 +532,23 @@ const server = http.createServer(async (req, res) => {
   }
 
   // --- API ROUTES ---
+
+  // 0. POST /generate-trip or POST /api/generate-trip (Groq AI Trip Generation)
+  if ((pathname === '/generate-trip' || pathname === '/api/generate-trip') && method === 'POST') {
+    try {
+      const body = await parseBody(req);
+      if (!body.destination || !body.destination.trim()) {
+        return sendJSON(res, 400, { error: 'Destination is required.' });
+      }
+
+      const generated = await generateTripWithGroq(body);
+      return sendJSON(res, 201, generated);
+    } catch (err) {
+      console.error('Trip generation error:', err.message);
+      const isAuthOrConfig = err.message.includes('not configured') || err.message.includes('API key') || err.message.includes('401');
+      return sendJSON(res, isAuthOrConfig ? 400 : 502, { error: err.message });
+    }
+  }
 
   // 1. GET /api/trips (List all trips)
   if (pathname === '/api/trips' && method === 'GET') {

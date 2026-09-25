@@ -182,6 +182,19 @@ const api = {
     } catch (err) {
       console.warn('Backend budget error:', err);
     }
+  },
+
+  async generateTrip(tripPreferences) {
+    const res = await fetch(`${API_BASE}/generate-trip`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(tripPreferences)
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || `HTTP ${res.status}: Failed to generate trip`);
+    }
+    return data;
   }
 };
 
@@ -402,9 +415,10 @@ function renderDaySchedule(dayNum) {
 // 3. CREATE, EDIT & DELETE TRIPS (CRUD)
 // ==========================================================
 async function handleTripPlanSubmit(e) {
-  e.preventDefault();
+  if (e && e.preventDefault) e.preventDefault();
 
-  const destination = document.getElementById('destinationInput').value.trim();
+  const destinationInput = document.getElementById('destinationInput');
+  const destination = destinationInput ? destinationInput.value.trim() : '';
   const depDate = document.getElementById('departureDate').value;
   const retDate = document.getElementById('returnDate').value;
   const budget = parseFloat(document.getElementById('budgetAmount').value) || 1500;
@@ -413,79 +427,106 @@ async function handleTripPlanSubmit(e) {
   const style = document.getElementById('travelStyle').value;
   const accommodation = document.getElementById('accommodationType').value;
   const pace = document.getElementById('travelPace').value;
+  const notesInput = document.getElementById('tripNotes');
+  const notes = notesInput ? notesInput.value.trim() : '';
 
-  const start = new Date(depDate);
-  const end = new Date(retDate);
-  let diffDays = Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1;
-  if (isNaN(diffDays) || diffDays < 1) diffDays = 4;
-  if (diffDays > 14) diffDays = 14;
+  const travellerTypeRadio = document.querySelector('input[name="travellerType"]:checked');
+  const travellerType = travellerTypeRadio ? travellerTypeRadio.value : 'couple';
 
-  const cityShort = destination.split(',')[0].trim();
-  const generatedDays = [];
+  if (!destination) {
+    showToast('⚠️ Please enter a destination!');
+    return;
+  }
 
-  const activityThemes = [
-    { sub: 'Arrival & Welcome', theme: `Welcome to ${cityShort} & Historic Alleys`, m: 'Check in & Orientation Stroll', a: 'Iconic Plaza & Artisan Cafes', e: 'Welcome Candlelit Local Dinner' },
-    { sub: 'Wonders & Heritage', theme: 'Hidden Gems & Cultural Exploration', m: 'Morning Architectural Landmark', a: 'Local Market Tastings & Polaroid Walk', e: 'Rooftop Sunset & Live Music' },
-    { sub: 'Nature & Panoramas', theme: 'Scenic Viewpoints & Peaceful Walks', m: 'Scenic Nature Trail / Coastal View', a: 'Boutique Shopping & Afternoon Treat', e: 'Cozy Fireplace / Harbor Dining' },
-    { sub: 'Art & Memories', theme: 'Local Flavors & Scrapbook Souvenirs', m: 'Art Museum or Historic Palace', a: 'Handicraft Workshops & Gift Hunt', e: 'Celebratory Farewell Feast' }
-  ];
+  const submitBtn = document.getElementById('planSubmitBtn') || (e?.target ? e.target.querySelector('button[type="submit"]') : null);
+  const resetBtn = document.getElementById('planResetBtn');
+  const originalBtnHTML = '<span>✨ Create Scrapbook Itinerary ✨</span>';
 
-  for (let i = 1; i <= diffDays; i++) {
-    const template = activityThemes[(i - 1) % activityThemes.length];
-    generatedDays.push({
-      dayNum: i,
-      subtitle: `${template.sub} (Day ${i})`,
-      theme: template.theme,
-      hotel: `${accommodation} in ${cityShort}`,
-      city: destination,
-      morning: {
-        time: '08:30 AM - 11:30 AM',
-        title: template.m,
-        desc: `Wake up early to experience ${cityShort} morning air and enjoy fresh local breakfast.`,
-        chips: ['☕ Coffee', `📍 ${cityShort} Sights`]
-      },
-      afternoon: {
-        time: '01:00 PM - 04:30 PM',
-        title: template.a,
-        desc: `Spend the afternoon diving into ${style.toLowerCase()} highlights at a ${pace.toLowerCase()} pace.`,
-        chips: ['📸 Polaroids', '🛍️ Crafts']
-      },
-      evening: {
-        time: '06:30 PM - 09:30 PM',
-        title: template.e,
-        desc: 'Wind down the day with warm hospitality and delicious local cuisine.',
-        chips: ['🍲 Dinner', '🌙 Starlit Walk']
+  // Loading state
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<span>⏳ Consulting Groq AI (gpt-oss-120b)...</span>';
+  }
+  if (resetBtn) resetBtn.disabled = true;
+  hidePlanError();
+  showToast('✨ Groq AI is crafting your personalized trip scrapbook...');
+
+  try {
+    const payload = {
+      destination,
+      depDate,
+      retDate,
+      budget,
+      currency,
+      travellers,
+      travellerType,
+      style,
+      accommodation,
+      pace,
+      notes
+    };
+
+    const result = await api.generateTrip(payload);
+
+    if (result && result.success) {
+      // Reload trips from database
+      const updatedTrips = await api.getTrips();
+      if (updatedTrips) {
+        allTrips = updatedTrips;
+        renderMyTripsGrid(allTrips);
       }
-    });
+
+      await loadTripById(result.tripId);
+      navigateTo('itinerary');
+      showToast(`✨ Generated "${activeTrip.title}" with Groq AI!`);
+    } else {
+      throw new Error(result.error || 'Failed to generate itinerary');
+    }
+  } catch (err) {
+    console.error('Groq Trip generation error:', err);
+    showPlanError(err.message || 'Error generating trip with Groq AI. Click retry to try again.');
+    showToast(`❌ ${err.message || 'Generation failed. Click retry.'}`);
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      const errBox = document.getElementById('planErrorBox');
+      if (errBox && errBox.style.display !== 'none') {
+        submitBtn.innerHTML = '<span>🔄 Retry Trip Generation</span>';
+      } else {
+        submitBtn.innerHTML = originalBtnHTML;
+      }
+    }
+    if (resetBtn) resetBtn.disabled = false;
   }
+}
 
-  const newTrip = {
-    id: 'trip_' + Date.now(),
-    title: `${cityShort} Cozy Scrapbook`,
-    destination: destination,
-    dates: `${depDate} to ${retDate} (${diffDays} Days)`,
-    travellers: `${travellers} Traveler(s)`,
-    travel_style: style,
-    accommodation: accommodation,
-    pace: pace,
-    budget: budget,
-    currency: currency,
-    days: generatedDays
-  };
-
-  // Connect frontend → backend → database
-  await api.createTrip(newTrip);
-
-  // Reload trips from backend
-  const updatedTrips = await api.getTrips();
-  if (updatedTrips) {
-    allTrips = updatedTrips;
-    renderMyTripsGrid(allTrips);
+function showPlanError(msg) {
+  const box = document.getElementById('planErrorBox');
+  const text = document.getElementById('planErrorText');
+  if (box && text) {
+    text.textContent = msg;
+    box.style.display = 'block';
   }
+}
 
-  await loadTripById(newTrip.id);
-  navigateTo('itinerary');
-  showToast(`✨ Created and saved "${cityShort}" to database!`);
+function hidePlanError() {
+  const box = document.getElementById('planErrorBox');
+  if (box) box.style.display = 'none';
+  const submitBtn = document.getElementById('planSubmitBtn');
+  if (submitBtn && !submitBtn.disabled) {
+    submitBtn.innerHTML = '<span>✨ Create Scrapbook Itinerary ✨</span>';
+  }
+}
+
+function retryTripPlanSubmit() {
+  const form = document.getElementById('tripPlanForm');
+  if (form) {
+    if (typeof form.requestSubmit === 'function') {
+      form.requestSubmit();
+    } else {
+      handleTripPlanSubmit({ preventDefault: () => {}, target: form });
+    }
+  }
 }
 
 async function editTripPrompt(tripId) {

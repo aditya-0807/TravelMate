@@ -360,12 +360,28 @@
             />
           </div>
 
+          <!-- Error & Retry Notice Box (hidden until error) -->
+          <div id="planErrorBox" class="plan-error-container" style="display: none; margin-top: 1rem; margin-bottom: 1rem; padding: 1rem 1.25rem; border-radius: var(--radius-md, 12px); background: #fff5f5; border: 2px dashed #fa899b;">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap;">
+              <div style="display: flex; align-items: center; gap: 0.75rem;">
+                <span style="font-size: 1.4rem;">⚠️</span>
+                <div>
+                  <strong style="color: #721c24; font-size: 0.95rem; display: block;">Groq AI Notice</strong>
+                  <span id="planErrorText" style="color: #856404; font-size: 0.9rem;"></span>
+                </div>
+              </div>
+              <button type="button" class="btn-secondary btn-sm" onclick="retryTripPlanSubmit()">
+                🔄 Retry
+              </button>
+            </div>
+          </div>
+
           <!-- Form Submit Button -->
           <div class="form-submit-row">
-            <button type="submit" class="btn-primary btn-sparkle">
+            <button type="submit" class="btn-primary btn-sparkle" id="planSubmitBtn">
               <span>✨ Create Scrapbook Itinerary ✨</span>
             </button>
-            <button type="reset" class="btn-secondary">
+            <button type="reset" class="btn-secondary" id="planResetBtn" onclick="hidePlanError()">
               <span>↺ Clear Form</span>
             </button>
           </div>
