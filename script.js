@@ -4,7 +4,14 @@
    Operations: Create, View, Edit, Delete trips + Load/Save Itinerary, Packing, Budget
    ========================================================== */
 
-const API_BASE = window.location.port === '3000' ? '' : 'http://localhost:3000';
+// The backend serves the frontend in production, so use the current origin.
+// Keep the local API origin only for standalone local development.
+const API_BASE = window.TRAVELMATE_API_BASE ?? (
+  window.location.protocol === 'file:' ||
+  (['localhost', '127.0.0.1'].includes(window.location.hostname) && window.location.port !== '3000')
+    ? 'http://localhost:3000'
+    : ''
+);
 
 const currencySymbols = {
   USD: '$',
@@ -185,11 +192,17 @@ const api = {
   },
 
   async generateTrip(tripPreferences) {
-    const res = await fetch(`${API_BASE}/generate-trip`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(tripPreferences)
-    });
+    let res;
+    try {
+      res = await fetch(`${API_BASE}/generate-trip`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(tripPreferences)
+      });
+    } catch {
+      const backend = API_BASE || window.location.origin;
+      throw new Error(`Cannot reach the TravelMate server at ${backend}. Make sure the backend is running and reachable.`);
+    }
     const data = await res.json();
     if (!res.ok) {
       throw new Error(data.error || `HTTP ${res.status}: Failed to generate trip`);

@@ -41,7 +41,10 @@ function loadEnv() {
 }
 loadEnv();
 
-const PORT = 3000;
+const configuredPort = Number.parseInt(process.env.PORT, 10);
+const PORT = Number.isInteger(configuredPort) && configuredPort > 0 && configuredPort <= 65535
+  ? configuredPort
+  : 3000;
 const DB_PATH = fs.existsSync(path.join(__dirname, 'travelmate.db'))
   ? path.join(__dirname, 'travelmate.db')
   : (fs.existsSync(path.join(__dirname, '..', 'travelmate.db'))
@@ -505,7 +508,9 @@ Important Constraints:
         budget: budgetItems
       };
     } catch (err) {
-      lastError = err;
+      lastError = err?.message === 'fetch failed'
+        ? new Error('Could not connect to Groq. Check that the backend host has internet access and can reach api.groq.com.')
+        : err;
       if (attempt <= maxRetries && !err.message.includes('not configured')) {
         await new Promise(r => setTimeout(r, 1500 * attempt));
       }
@@ -706,7 +711,17 @@ const server = http.createServer(async (req, res) => {
   }
 
   // --- STATIC FILE SERVING ---
-  let filePath = path.join(STATIC_DIR, pathname === '/' ? 'index.html' : pathname);
+  const staticRoot = path.resolve(STATIC_DIR);
+  const requestedPath = pathname === '/' ? 'index.html' : pathname.replace(/^[/\\]+/, '');
+  let filePath = path.resolve(staticRoot, requestedPath);
+  const isInsideStaticRoot = filePath.startsWith(`${staticRoot}${path.sep}`);
+  const requestsHiddenPath = requestedPath.split(/[/\\]+/).some(segment => segment.startsWith('.'));
+
+  if (!isInsideStaticRoot || requestsHiddenPath) {
+    res.writeHead(404);
+    return res.end('File Not Found');
+  }
+
   if (!fs.existsSync(filePath)) {
     filePath = path.join(STATIC_DIR, 'index.html');
   }
